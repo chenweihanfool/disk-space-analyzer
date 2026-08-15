@@ -1,0 +1,588 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>D槽容量分析 Disk Space Analyzer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --border:         rgba(11,11,11,0.10);
+    --seq-100: #cde2fb; --seq-150: #b7d3f6; --seq-200: #9ec5f4; --seq-250: #86b6ef;
+    --seq-300: #6da7ec; --seq-350: #5598e7; --seq-400: #3987e5; --seq-450: #2a78d6;
+    --seq-500: #256abf; --seq-550: #1c5cab; --seq-600: #184f95; --seq-650: #104281;
+    --seq-700: #0d366b;
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --border:         rgba(255,255,255,0.10);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .app { padding: 20px; min-height: 100vh; }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  .hidden { display: none !important; }
+
+  /* ---- top bar ---- */
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .ver { font-size: 12px; color: var(--text-muted); }
+  .update-banner {
+    display: flex; align-items: center; gap: 10px; background: var(--surface-1);
+    border: 1px solid var(--status-warning); border-radius: 8px; padding: 8px 12px;
+    font-size: 13px; margin-bottom: 14px;
+  }
+  .update-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-warning); flex: none; }
+  .update-banner button {
+    border: none; background: var(--seq-450); color: #fff; padding: 5px 10px; border-radius: 6px;
+    font: inherit; cursor: pointer; font-size: 12px;
+  }
+  .update-banner .dismiss { background: none; color: var(--text-secondary); }
+
+  /* ---- setup screen ---- */
+  .setup-card {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+    padding: 24px; margin-top: 40px;
+  }
+  .setup-card h2 { font-size: 16px; margin: 0 0 4px; }
+  .setup-card .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 18px; }
+  .drive-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .drive-tile {
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; text-align: left;
+    background: var(--page); font: inherit; color: var(--text-primary);
+  }
+  .drive-tile:hover { border-color: var(--seq-450); }
+  .drive-tile.selected { border-color: var(--seq-450); box-shadow: 0 0 0 1px var(--seq-450) inset; }
+  .drive-tile .d-name { font-weight: 600; font-size: 14px; }
+  .drive-tile .d-usage { font-size: 12px; color: var(--text-secondary); margin: 4px 0 6px; }
+  .drive-tile .d-bar { height: 6px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
+  .drive-tile .d-bar-fill { height: 100%; background: var(--seq-450); }
+
+  .path-row { display: flex; gap: 8px; margin-bottom: 18px; }
+  .path-row input {
+    flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--page); color: var(--text-primary); font: inherit; font-size: 13px;
+  }
+  .btn {
+    border: none; border-radius: 6px; padding: 8px 14px; font: inherit; font-size: 13px;
+    cursor: pointer; background: var(--surface-1); border: 1px solid var(--border); color: var(--text-primary);
+  }
+  .btn:hover { border-color: var(--seq-450); }
+  .btn-primary { background: var(--seq-450); color: #fff; border: none; font-weight: 600; padding: 10px 18px; }
+  .btn-primary:hover { background: var(--seq-500); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ---- scanning screen ---- */
+  .scan-card { text-align: center; margin-top: 80px; }
+  .scan-card .count { font-size: 32px; font-weight: 600; margin: 16px 0 4px; }
+  .scan-card .elapsed { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
+  .spinner {
+    width: 36px; height: 36px; border-radius: 50%; margin: 0 auto;
+    border: 3px solid var(--gridline); border-top-color: var(--seq-450);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- results screen ---- */
+  .stat-row { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+  .stat-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; flex: 1; min-width: 140px; }
+  .stat-tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+  .stat-tile .value { font-size: 22px; font-weight: 600; }
+  .stat-tile .value.accent { color: var(--seq-450); }
+
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 20px 0 10px; flex-wrap: wrap; }
+  .breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 13px; }
+  .breadcrumb button { background: none; border: none; color: var(--seq-450); cursor: pointer; font: inherit; padding: 4px 6px; border-radius: 4px; }
+  .breadcrumb button:hover { background: var(--surface-1); text-decoration: underline; }
+  .breadcrumb .sep { color: var(--text-muted); }
+  .breadcrumb .current { color: var(--text-secondary); padding: 4px 6px; }
+
+  .toolbar-right { display: flex; gap: 8px; align-items: center; }
+  .view-toggle { display: flex; gap: 4px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+  .view-toggle button { border: none; background: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; color: var(--text-secondary); }
+  .view-toggle button.active { background: var(--seq-450); color: #fff; }
+
+  .legend-scale { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .legend-scale .bar { width: 120px; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--seq-150), var(--seq-700)); }
+
+  #treemap { position: relative; width: 100%; height: 520px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tile { position: absolute; border-radius: 4px; cursor: pointer; display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; padding: 6px 8px; overflow: hidden; transition: filter 0.1s ease; }
+  .tile:hover { filter: brightness(1.08); }
+  .tile.leaf { cursor: default; }
+  .tile .t-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .tile .t-size { font-size: 11px; opacity: 0.85; white-space: nowrap; }
+
+  .tooltip { position: fixed; pointer-events: none; z-index: 50; background: var(--text-primary); color: var(--surface-1); font-size: 12px; padding: 8px 10px; border-radius: 6px; max-width: 320px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); display: none; line-height: 1.5; }
+  .tooltip .tt-path { word-break: break-all; color: var(--text-secondary); font-size: 11px; }
+  .tooltip .tt-hint { color: var(--text-muted); font-size: 10px; margin-top: 2px; }
+
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  table.data-table th, table.data-table td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--gridline); }
+  table.data-table th { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
+  table.data-table td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  table.data-table tr:last-child td { border-bottom: none; }
+  table.data-table td.path { word-break: break-all; cursor: pointer; }
+  table.data-table td.path:hover { color: var(--seq-450); text-decoration: underline; }
+  table.data-table tbody tr:hover { background: var(--page); }
+
+  .hint { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+  .error-banner { background: var(--surface-1); border: 1px solid var(--status-critical); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="wrap">
+    <div class="topbar">
+      <h1>D槽容量分析 Disk Space Analyzer</h1>
+      <span class="ver">v<span id="verLabel">-</span></span>
+    </div>
+
+    <div id="updateBanner" class="update-banner hidden">
+      <span class="dot"></span>
+      <span id="updateText"></span>
+      <button id="btnDoUpdate">立即更新</button>
+      <button class="dismiss" id="btnDismissUpdate">稍後</button>
+    </div>
+
+    <div id="errorBanner" class="error-banner hidden"></div>
+
+    <!-- SETUP SCREEN -->
+    <div id="screenSetup">
+      <div class="setup-card">
+        <h2>選擇要掃描的磁碟或資料夾</h2>
+        <div class="sub">找出佔用空間最多的資料夾容量怪獸</div>
+        <div class="drive-grid" id="driveGrid"></div>
+        <div class="path-row">
+          <input id="pathInput" type="text" placeholder="或輸入 / 瀏覽自訂資料夾路徑">
+          <button class="btn" id="btnBrowse">瀏覽…</button>
+        </div>
+        <button class="btn btn-primary" id="btnStartScan">開始掃描</button>
+      </div>
+    </div>
+
+    <!-- SCANNING SCREEN -->
+    <div id="screenScanning" class="hidden">
+      <div class="scan-card">
+        <div class="spinner"></div>
+        <div class="count"><span id="scanCount">0</span> 個資料夾</div>
+        <div class="elapsed">已耗時 <span id="scanElapsed">0</span> 秒 ・ <span id="scanPath"></span></div>
+        <button class="btn" id="btnCancelScan">取消掃描</button>
+      </div>
+    </div>
+
+    <!-- RESULTS SCREEN -->
+    <div id="screenResults" class="hidden">
+      <div class="stat-row">
+        <div class="stat-tile"><div class="label">總使用量</div><div class="value accent" id="statTotal">-</div></div>
+        <div class="stat-tile"><div class="label">檔案總數</div><div class="value" id="statFiles">-</div></div>
+        <div class="stat-tile"><div class="label">最大容量怪獸</div><div class="value" id="statTop">-</div></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="breadcrumb" id="breadcrumb"></div>
+        <div class="toolbar-right">
+          <button class="btn" id="btnRescan">重新掃描</button>
+          <div class="view-toggle">
+            <button id="btnTreemap" class="active">區塊圖</button>
+            <button id="btnTable">表格</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend-scale" id="legendScale"><span>容量小</span><div class="bar"></div><span>容量大</span></div>
+
+      <div id="treemap"></div>
+      <div id="tableView" style="display:none;"></div>
+
+      <div class="hint">點擊區塊可鑽入子資料夾；點麵包屑可返回上層；雙擊表格路徑可在檔案總管開啟。「(此層檔案)」代表該資料夾內未歸類到子資料夾的檔案，「...其他」代表容量較小、未展開的其餘資料夾。</div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+function fmtSize(bytes) {
+  if (bytes >= 1024**3) return (bytes / 1024**3).toFixed(2) + ' GB';
+  if (bytes >= 1024**2) return (bytes / 1024**2).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+function fmtInt(n) { return Number(n).toLocaleString('zh-TW'); }
+
+function showScreen(id) {
+  ['screenSetup', 'screenScanning', 'screenResults'].forEach(s => {
+    document.getElementById(s).classList.toggle('hidden', s !== id);
+  });
+}
+function showError(msg) {
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+function clearError() {
+  document.getElementById('errorBanner').classList.add('hidden');
+}
+
+let selectedPath = null;
+
+function ready(fn) {
+  if (window.pywebview && window.pywebview.api) fn();
+  else window.addEventListener('pywebviewready', fn);
+}
+
+ready(async () => {
+  try {
+    const ver = await window.pywebview.api.get_version();
+    document.getElementById('verLabel').textContent = ver;
+  } catch (e) {}
+  loadDrives();
+  checkForUpdate();
+});
+
+async function loadDrives() {
+  const grid = document.getElementById('driveGrid');
+  grid.innerHTML = '<div style="font-size:13px;color:var(--text-secondary);">讀取磁碟中...</div>';
+  try {
+    const drives = await window.pywebview.api.list_drives();
+    grid.innerHTML = '';
+    drives.forEach(d => {
+      const pct = d.total > 0 ? (d.used / d.total) * 100 : 0;
+      const tile = document.createElement('button');
+      tile.className = 'drive-tile';
+      tile.innerHTML = `<div class="d-name">${d.path}</div>` +
+        `<div class="d-usage">${fmtSize(d.used)} / ${fmtSize(d.total)}</div>` +
+        `<div class="d-bar"><div class="d-bar-fill" style="width:${pct.toFixed(0)}%"></div></div>`;
+      tile.addEventListener('click', () => selectPath(d.path, tile));
+      grid.appendChild(tile);
+    });
+  } catch (e) {
+    grid.innerHTML = '<div style="font-size:13px;color:var(--text-secondary);">無法讀取磁碟清單</div>';
+  }
+}
+
+function selectPath(path, tileEl) {
+  selectedPath = path;
+  document.getElementById('pathInput').value = path;
+  document.querySelectorAll('.drive-tile').forEach(t => t.classList.remove('selected'));
+  if (tileEl) tileEl.classList.add('selected');
+}
+
+document.getElementById('pathInput').addEventListener('input', (e) => {
+  selectedPath = e.target.value.trim();
+  document.querySelectorAll('.drive-tile').forEach(t => t.classList.remove('selected'));
+});
+
+document.getElementById('btnBrowse').addEventListener('click', async () => {
+  const path = await window.pywebview.api.pick_folder();
+  if (path) selectPath(path, null);
+});
+
+document.getElementById('btnStartScan').addEventListener('click', async () => {
+  const path = (document.getElementById('pathInput').value || '').trim();
+  if (!path) { showError('請先選擇磁碟或資料夾'); return; }
+  clearError();
+  document.getElementById('scanPath').textContent = path;
+  showScreen('screenScanning');
+  const res = await window.pywebview.api.start_scan(path);
+  if (res && res.error) {
+    showError(res.error);
+    showScreen('screenSetup');
+  }
+});
+
+document.getElementById('btnCancelScan').addEventListener('click', async () => {
+  await window.pywebview.api.cancel_scan();
+});
+
+document.getElementById('btnRescan').addEventListener('click', () => {
+  showScreen('screenSetup');
+});
+
+function onScanProgress(count, elapsed) {
+  document.getElementById('scanCount').textContent = fmtInt(count);
+  document.getElementById('scanElapsed').textContent = elapsed.toFixed(0);
+}
+function onScanCancelled() {
+  showScreen('screenSetup');
+}
+function onScanError(msg) {
+  showError('掃描失敗：' + msg);
+  showScreen('screenSetup');
+}
+
+let DATA = null;
+let pathStack = [];
+
+function onScanComplete(result) {
+  DATA = result;
+  pathStack = [DATA.tree];
+  document.getElementById('statTotal').textContent = fmtSize(DATA.total_size);
+  document.getElementById('statFiles').textContent = fmtInt(DATA.total_files);
+  const biggest = DATA.top_folders.find(f => f.path !== DATA.root) || DATA.top_folders[0];
+  document.getElementById('statTop').textContent = biggest ? (biggest.path.split('\\').pop() || biggest.path) + ' (' + fmtSize(biggest.size) + ')' : '-';
+  renderBreadcrumb();
+  renderTable();
+  showScreen('screenResults');
+  renderTreemap(DATA.tree);
+}
+
+/* ---- squarified treemap ---- */
+function squarify(children, x, y, w, h) {
+  const rects = [];
+  const items = children.filter(c => c.size > 0).slice();
+  if (!items.length) return rects;
+  const total = items.reduce((s, c) => s + c.size, 0);
+  const area = w * h;
+  const scaled = items.map(c => ({ node: c, area: (c.size / total) * area }));
+
+  function layoutRow(row, rx, ry, rw, rh, horizontal) {
+    const rowTotal = row.reduce((s, r) => s + r.area, 0);
+    let offset = 0;
+    row.forEach(r => {
+      if (horizontal) {
+        const rectW = rowTotal > 0 ? (r.area / rowTotal) * rw : 0;
+        rects.push({ node: r.node, x: rx + offset, y: ry, w: rectW, h: rh });
+        offset += rectW;
+      } else {
+        const rectH = rowTotal > 0 ? (r.area / rowTotal) * rh : 0;
+        rects.push({ node: r.node, x: rx, y: ry + offset, w: rw, h: rectH });
+        offset += rectH;
+      }
+    });
+  }
+
+  function worstRatio(row, sideLen) {
+    const sum = row.reduce((s, r) => s + r.area, 0);
+    if (sum === 0) return Infinity;
+    let maxA = -Infinity, minA = Infinity;
+    row.forEach(r => { if (r.area > maxA) maxA = r.area; if (r.area < minA) minA = r.area; });
+    const s2 = sideLen * sideLen;
+    return Math.max((s2 * maxA) / (sum * sum), (sum * sum) / (s2 * minA));
+  }
+
+  let remaining = scaled.slice();
+  let cx = x, cy = y, cw = w, ch = h;
+
+  while (remaining.length) {
+    const horizontal = cw >= ch;
+    const sideLen = horizontal ? ch : cw;
+    let row = [remaining[0]];
+    let rest = remaining.slice(1);
+    let bestRow = row.slice();
+
+    while (rest.length) {
+      const trial = row.concat([rest[0]]);
+      if (worstRatio(trial, sideLen) <= worstRatio(row, sideLen)) {
+        row = trial;
+        rest = rest.slice(1);
+        bestRow = row.slice();
+      } else {
+        break;
+      }
+    }
+
+    const rowTotal = bestRow.reduce((s, r) => s + r.area, 0);
+    const rowThickness = sideLen > 0 ? rowTotal / sideLen : 0;
+
+    if (horizontal) {
+      layoutRow(bestRow, cx, cy, rowThickness, ch, false);
+      cx += rowThickness; cw -= rowThickness;
+    } else {
+      layoutRow(bestRow, cx, cy, cw, rowThickness, true);
+      cy += rowThickness; ch -= rowThickness;
+    }
+    remaining = rest;
+  }
+
+  return rects;
+}
+
+const seqSteps = ['--seq-150','--seq-200','--seq-250','--seq-300','--seq-350','--seq-400','--seq-450','--seq-500','--seq-550','--seq-600','--seq-650','--seq-700'];
+function textColorFor(idx) { return idx >= 6 ? '#ffffff' : '#0b0b0b'; }
+
+const container = document.getElementById('treemap');
+const tooltip = document.getElementById('tooltip');
+
+function renderTreemap(node) {
+  container.innerHTML = '';
+  const kids = (node.children || []).filter(c => c.size > 0);
+  if (!kids.length) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'padding:16px;color:var(--text-secondary);font-size:13px;';
+    msg.textContent = '此資料夾沒有可展開的子資料夾（可能已達掃描深度上限，或內容都是單層檔案）。';
+    container.appendChild(msg);
+    return;
+  }
+  const W = container.clientWidth, H = container.clientHeight;
+  const rects = squarify(kids, 0, 0, W, H);
+  const logs = kids.map(c => Math.log(Math.max(c.size, 1)));
+  const minLog = Math.min(...logs), maxLog = Math.max(...logs);
+  const rootStyle = getComputedStyle(document.documentElement);
+
+  rects.forEach(r => {
+    const idx = Math.max(0, Math.min(seqSteps.length - 1, Math.round(((Math.log(Math.max(r.node.size,1)) - minLog) / (Math.max(maxLog - minLog, 1e-9))) * (seqSteps.length - 1))));
+    const div = document.createElement('div');
+    div.className = 'tile' + (r.node.path ? '' : ' leaf');
+    div.style.left = r.x + 'px';
+    div.style.top = r.y + 'px';
+    div.style.width = Math.max(r.w - 2, 0) + 'px';
+    div.style.height = Math.max(r.h - 2, 0) + 'px';
+    div.style.background = rootStyle.getPropertyValue(seqSteps[idx]).trim();
+    div.style.color = textColorFor(idx);
+
+    if (r.w > 40 && r.h > 20) {
+      const nameEl = document.createElement('div');
+      nameEl.className = 't-name';
+      nameEl.textContent = r.node.name;
+      div.appendChild(nameEl);
+      if (r.h > 34) {
+        const sizeEl = document.createElement('div');
+        sizeEl.className = 't-size';
+        sizeEl.textContent = fmtSize(r.node.size);
+        div.appendChild(sizeEl);
+      }
+    }
+
+    div.addEventListener('mousemove', (e) => {
+      tooltip.style.display = 'block';
+      tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - 340) + 'px';
+      tooltip.style.top = (e.clientY + 14) + 'px';
+      const pct = node.size > 0 ? ((r.node.size / node.size) * 100).toFixed(1) : '0';
+      tooltip.innerHTML = `<div><b>${r.node.name}</b></div>` +
+        (r.node.path ? `<div class="tt-path">${r.node.path}</div>` : '') +
+        `<div>${fmtSize(r.node.size)} ・ ${fmtInt(r.node.files || 0)} 個檔案 ・ 佔上層 ${pct}%</div>` +
+        (r.node.path ? `<div class="tt-hint">雙擊可在檔案總管開啟</div>` : '');
+    });
+    div.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+    if (r.node.path && r.node.children && r.node.children.length) {
+      div.addEventListener('click', () => {
+        pathStack.push(r.node);
+        renderBreadcrumb();
+        renderTreemap(r.node);
+      });
+    }
+    if (r.node.path) {
+      div.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        window.pywebview.api.open_path(r.node.path);
+      });
+    }
+
+    container.appendChild(div);
+  });
+}
+
+function renderBreadcrumb() {
+  const bc = document.getElementById('breadcrumb');
+  bc.innerHTML = '';
+  pathStack.forEach((n, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = '›';
+      bc.appendChild(sep);
+    }
+    if (i === pathStack.length - 1) {
+      const cur = document.createElement('span');
+      cur.className = 'current';
+      cur.textContent = n.name;
+      bc.appendChild(cur);
+    } else {
+      const btn = document.createElement('button');
+      btn.textContent = n.name;
+      btn.addEventListener('click', () => {
+        pathStack = pathStack.slice(0, i + 1);
+        renderBreadcrumb();
+        renderTreemap(pathStack[pathStack.length - 1]);
+      });
+      bc.appendChild(btn);
+    }
+  });
+}
+
+window.addEventListener('resize', () => {
+  if (DATA) renderTreemap(pathStack[pathStack.length - 1]);
+});
+
+const tableView = document.getElementById('tableView');
+function renderTable() {
+  const rows = DATA.top_folders.filter(f => f.path !== DATA.root).slice(0, 60);
+  let html = '<table class="data-table"><thead><tr><th>路徑</th><th style="text-align:right">容量</th><th style="text-align:right">檔案數</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    html += `<tr><td class="path" data-path="${r.path.replace(/"/g, '&quot;')}">${r.path}</td><td class="num">${fmtSize(r.size)}</td><td class="num">${fmtInt(r.files)}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  tableView.innerHTML = html;
+  tableView.querySelectorAll('td.path').forEach(td => {
+    td.addEventListener('dblclick', () => window.pywebview.api.open_path(td.dataset.path));
+  });
+}
+
+const btnTreemap = document.getElementById('btnTreemap');
+const btnTable = document.getElementById('btnTable');
+const treemapEl = document.getElementById('treemap');
+const legendEl = document.getElementById('legendScale');
+const breadcrumbEl = document.getElementById('breadcrumb');
+btnTable.addEventListener('click', () => {
+  btnTable.classList.add('active'); btnTreemap.classList.remove('active');
+  treemapEl.style.display = 'none'; legendEl.style.display = 'none'; breadcrumbEl.style.display = 'none';
+  tableView.style.display = 'block';
+});
+btnTreemap.addEventListener('click', () => {
+  btnTreemap.classList.add('active'); btnTable.classList.remove('active');
+  treemapEl.style.display = 'block'; legendEl.style.display = 'flex'; breadcrumbEl.style.display = 'flex';
+  tableView.style.display = 'none';
+  renderTreemap(pathStack[pathStack.length - 1]);
+});
+
+/* ---- auto update ---- */
+let updateInfo = null;
+async function checkForUpdate() {
+  try {
+    const info = await window.pywebview.api.check_update();
+    if (info && info.update_available) {
+      updateInfo = info;
+      document.getElementById('updateText').textContent = `發現新版本 v${info.latest_version}（目前 v${info.current_version}）`;
+      document.getElementById('updateBanner').classList.remove('hidden');
+    }
+  } catch (e) {}
+}
+document.getElementById('btnDismissUpdate').addEventListener('click', () => {
+  document.getElementById('updateBanner').classList.add('hidden');
+});
+document.getElementById('btnDoUpdate').addEventListener('click', async () => {
+  if (!updateInfo) return;
+  document.getElementById('updateText').textContent = '正在更新，請稍候...';
+  document.getElementById('btnDoUpdate').disabled = true;
+  await window.pywebview.api.do_update(updateInfo.download_url, updateInfo.latest_version);
+});
+function onUpdateProgress(msg) {
+  document.getElementById('updateText').textContent = msg;
+}
+function onUpdateError(msg) {
+  document.getElementById('updateText').textContent = '更新失敗：' + msg;
+}
+</script>
+</body>
+</html>
