@@ -8,6 +8,7 @@ import webbrowser
 
 import webview
 
+import cleaner
 import scanner
 import updater
 from version import APP_VERSION, GITHUB_REPO
@@ -90,6 +91,18 @@ class Api:
     def open_url(self, url):
         webbrowser.open(url)
         return {}
+
+    def clean_preview(self):
+        try:
+            return cleaner.preview()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def clean_run(self, ids):
+        try:
+            return cleaner.run(ids)
+        except Exception as e:
+            return {"error": str(e)}
 
     def get_version(self):
         return APP_VERSION
