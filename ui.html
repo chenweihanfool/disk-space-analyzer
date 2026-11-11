@@ -146,6 +146,27 @@
 
   .hint { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
   .error-banner { background: var(--surface-1); border: 1px solid var(--status-critical); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+
+  /* ---- clean screen ---- */
+  .clean-row {
+    display: grid; grid-template-columns: 28px 1fr auto auto; gap: 12px; align-items: center;
+    padding: 12px 4px; border-bottom: 1px solid var(--gridline); cursor: pointer;
+  }
+  .clean-row:last-child { border-bottom: none; }
+  .clean-row.disabled { cursor: default; opacity: 0.6; }
+  .clean-row input[type=checkbox] { width: 16px; height: 16px; margin: 0; }
+  .clean-row .c-name { font-weight: 600; font-size: 14px; }
+  .clean-row .c-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .clean-row .c-warn { font-size: 12px; color: var(--status-critical); margin-top: 4px; }
+  .clean-row .c-size { font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
+  .clean-row .c-count { font-size: 12px; color: var(--text-secondary); text-align: right; min-width: 90px; font-variant-numeric: tabular-nums; }
+  .clean-row .c-na { font-size: 12px; color: var(--text-muted); }
+  .clean-msg { font-size: 13px; color: var(--text-secondary); padding: 12px 4px; }
+  .clean-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+  .clean-footer .sel { font-size: 13px; color: var(--text-secondary); }
+  .clean-actions { display: flex; gap: 8px; }
+  .clean-big { font-size: 32px; font-weight: 600; margin: 8px 0 14px; }
+  .clean-note { font-size: 13px; color: var(--text-primary); margin: 12px 0 0; }
 </style>
 </head>
 <body>
@@ -176,6 +197,7 @@
           <button class="btn" id="btnBrowse">瀏覽…</button>
         </div>
         <button class="btn btn-primary" id="btnStartScan">開始掃描</button>
+        <button class="btn" id="btnCleanSetup" style="margin-left:8px;">一鍵瘦身</button>
       </div>
     </div>
 
@@ -200,6 +222,7 @@
       <div class="toolbar">
         <div class="breadcrumb" id="breadcrumb"></div>
         <div class="toolbar-right">
+          <button class="btn" id="btnCleanResults">一鍵瘦身</button>
           <button class="btn" id="btnRescan">重新掃描</button>
           <div class="view-toggle">
             <button id="btnTreemap" class="active">區塊圖</button>
@@ -214,6 +237,22 @@
       <div id="tableView" style="display:none;"></div>
 
       <div class="hint">點擊區塊可鑽入子資料夾；點麵包屑可返回上層；雙擊表格路徑可在檔案總管開啟。「(此層檔案)」代表該資料夾內未歸類到子資料夾的檔案，「...其他」代表容量較小、未展開的其餘資料夾。</div>
+    </div>
+
+    <!-- CLEAN SCREEN -->
+    <div id="screenClean" class="hidden">
+      <div class="setup-card">
+        <h2>一鍵瘦身</h2>
+        <div class="sub">只清除系統與程式產生的暫存垃圾，不會動到你的文件</div>
+        <div id="cleanBody"></div>
+        <div class="clean-footer">
+          <span class="sel" id="cleanSel"></span>
+          <span class="clean-actions">
+            <button class="btn" id="btnCleanBack">返回</button>
+            <button class="btn btn-primary" id="btnCleanRun" disabled>清理選取項目</button>
+          </span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -230,7 +269,7 @@ function fmtSize(bytes) {
 function fmtInt(n) { return Number(n).toLocaleString('zh-TW'); }
 
 function showScreen(id) {
-  ['screenSetup', 'screenScanning', 'screenResults'].forEach(s => {
+  ['screenSetup', 'screenScanning', 'screenResults', 'screenClean'].forEach(s => {
     document.getElementById(s).classList.toggle('hidden', s !== id);
   });
 }
@@ -554,6 +593,203 @@ btnTreemap.addEventListener('click', () => {
   treemapEl.style.display = 'block'; legendEl.style.display = 'flex'; breadcrumbEl.style.display = 'flex';
   tableView.style.display = 'none';
   renderTreemap(pathStack[pathStack.length - 1]);
+});
+
+/* ---- one-click clean ---- */
+let cleanOrigin = 'screenSetup';
+let cleanState = 'idle'; // idle | loading | ready | running | done | error
+let cleanCategories = [];
+
+function setCleanMsg(text) {
+  const body = document.getElementById('cleanBody');
+  body.innerHTML = '';
+  const d = document.createElement('div');
+  d.className = 'clean-msg';
+  d.textContent = text;
+  body.appendChild(d);
+}
+function selectedCleanCats() {
+  const ids = new Set(Array.from(document.querySelectorAll('#cleanBody input[type=checkbox]:checked')).map(cb => cb.value));
+  return cleanCategories.filter(c => ids.has(String(c.id)));
+}
+function updateCleanFooter() {
+  const sel = document.getElementById('cleanSel');
+  const run = document.getElementById('btnCleanRun');
+  const back = document.getElementById('btnCleanBack');
+  const busy = cleanState === 'loading' || cleanState === 'running';
+  document.querySelectorAll('#cleanBody input[type=checkbox]').forEach(cb => {
+    cb.disabled = busy || cb.dataset.unavail === '1';
+  });
+  back.disabled = busy;
+  sel.textContent = '';
+  if (cleanState === 'ready') {
+    const cats = selectedCleanCats();
+    const total = cats.reduce((s, c) => s + c.size, 0);
+    run.textContent = '清理選取項目';
+    run.disabled = cats.length === 0;
+    sel.textContent = `已選取 ${cats.length} 項，共 ${fmtSize(total)}`;
+  } else if (cleanState === 'done' || cleanState === 'error') {
+    run.textContent = '重新估算';
+    run.disabled = false;
+  } else {
+    run.textContent = '清理選取項目';
+    run.disabled = true;
+    if (cleanState === 'running') sel.textContent = '清理中，請稍候…';
+  }
+}
+
+function openClean(from) {
+  cleanOrigin = from;
+  clearError();
+  showScreen('screenClean');
+  runCleanPreview();
+}
+
+async function runCleanPreview() {
+  cleanState = 'loading';
+  cleanCategories = [];
+  setCleanMsg('正在估算可清除空間…');
+  updateCleanFooter();
+  try {
+    const res = await window.pywebview.api.clean_preview();
+    if (!res || res.error) throw new Error(res && res.error ? res.error : '估算失敗');
+    cleanCategories = res.categories || [];
+    cleanState = 'ready';
+    renderCleanList();
+  } catch (e) {
+    cleanState = 'error';
+    showError('一鍵瘦身：' + (e && e.message ? e.message : e));
+    setCleanMsg('無法估算可清除空間，可按「返回」或「重新估算」再試。');
+  }
+  updateCleanFooter();
+}
+
+function renderCleanList() {
+  const body = document.getElementById('cleanBody');
+  body.innerHTML = '';
+  cleanCategories.forEach(c => {
+    const unavail = !c.available || c.size === 0;
+    const row = document.createElement('label');
+    row.className = 'clean-row' + (unavail ? ' disabled' : '');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = String(c.id);
+    cb.dataset.unavail = unavail ? '1' : '0';
+    cb.checked = !unavail && !!c.default_checked;
+    cb.addEventListener('change', updateCleanFooter);
+    row.appendChild(cb);
+
+    const info = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'c-name';
+    name.textContent = c.name + (unavail ? '（未找到）' : '');
+    info.appendChild(name);
+    if (c.desc) {
+      const desc = document.createElement('div');
+      desc.className = 'c-desc';
+      desc.textContent = c.desc;
+      info.appendChild(desc);
+    }
+    if (c.warning) {
+      const warn = document.createElement('div');
+      warn.className = 'c-warn';
+      warn.textContent = c.warning;
+      info.appendChild(warn);
+    }
+    row.appendChild(info);
+
+    const size = document.createElement('div');
+    size.className = 'c-size';
+    size.textContent = unavail ? '' : fmtSize(c.size);
+    row.appendChild(size);
+
+    const count = document.createElement('div');
+    count.className = 'c-count';
+    count.textContent = unavail ? '' : fmtInt(c.count || 0) + ' 個檔案';
+    row.appendChild(count);
+
+    body.appendChild(row);
+  });
+  if (!cleanCategories.length) setCleanMsg('沒有可清理的類別。');
+}
+
+function renderCleanResult(res) {
+  const body = document.getElementById('cleanBody');
+  body.innerHTML = '';
+  const big = document.createElement('div');
+  big.className = 'clean-big';
+  big.textContent = '已釋放 ' + fmtSize(res.total_freed || 0);
+  body.appendChild(big);
+
+  const table = document.createElement('table');
+  table.className = 'data-table';
+  table.innerHTML = '<thead><tr><th>類別</th><th style="text-align:right">釋放</th><th style="text-align:right">刪除檔案數</th><th style="text-align:right">略過 ／ 失敗</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  let anyFailed = false;
+  (res.results || []).forEach(r => {
+    if (r.failed > 0) anyFailed = true;
+    const tr = document.createElement('tr');
+    const cells = [
+      [r.name, ''],
+      [fmtSize(r.freed || 0), 'num'],
+      [fmtInt(r.deleted || 0), 'num'],
+      [`略過 ${fmtInt(r.skipped || 0)} ／ 失敗 ${fmtInt(r.failed || 0)}`, 'num'],
+    ];
+    cells.forEach(([text, cls]) => {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  if (anyFailed) {
+    const note = document.createElement('div');
+    note.className = 'clean-note';
+    note.textContent = '部分檔案使用中或無權限，已略過';
+    body.appendChild(note);
+  }
+}
+
+document.getElementById('btnCleanSetup').addEventListener('click', () => openClean('screenSetup'));
+document.getElementById('btnCleanResults').addEventListener('click', () => openClean('screenResults'));
+
+document.getElementById('btnCleanBack').addEventListener('click', () => {
+  if (cleanState === 'running' || cleanState === 'loading') return;
+  clearError();
+  showScreen(cleanOrigin);
+  if (cleanOrigin === 'screenSetup') loadDrives();
+});
+
+document.getElementById('btnCleanRun').addEventListener('click', async () => {
+  if (cleanState === 'done' || cleanState === 'error') {
+    runCleanPreview();
+    return;
+  }
+  const cats = selectedCleanCats();
+  if (!cats.length) return;
+  const total = cats.reduce((s, c) => s + c.size, 0);
+  const names = cats.map(c => '・' + c.name).join('\n');
+  const msg = `將清理以下類別（共 ${fmtSize(total)}）：\n${names}\n\n檔案會直接刪除，不會進資源回收筒。確定要清理嗎？`;
+  if (!confirm(msg)) return;
+
+  cleanState = 'running';
+  clearError();
+  updateCleanFooter();
+  try {
+    const res = await window.pywebview.api.clean_run(cats.map(c => String(c.id)));
+    if (!res || res.error) throw new Error(res && res.error ? res.error : '清理失敗');
+    cleanState = 'done';
+    renderCleanResult(res);
+  } catch (e) {
+    cleanState = 'error';
+    showError('一鍵瘦身：' + (e && e.message ? e.message : e));
+  }
+  updateCleanFooter();
 });
 
 /* ---- auto update ---- */
