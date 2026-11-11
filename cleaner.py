@@ -255,6 +255,7 @@ def _clean_root(category, root, now, result):
         return
 
     pending_dirs = []
+    touched_dirs = set()
     stack = [(root, 0)]
     while stack:
         current, depth = stack.pop()
@@ -293,19 +294,23 @@ def _clean_root(category, root, now, result):
             if _remove_file(entry.path):
                 result["freed"] += st.st_size
                 result["deleted"] += 1
+                touched_dirs.add(os.path.dirname(entry.path))
             else:
                 result["failed"] += 1
 
-    # 由深到淺移除清理後變空的資料夾；根目錄本身永遠不在清單內。
+    # 由深到淺移除「因這次清理而變空」的資料夾；根目錄本身永遠不在清單內。
     pending_dirs.sort(key=lambda item: item[0], reverse=True)
     for _, path in pending_dirs:
+        if path not in touched_dirs:
+            continue
         if not _inside(path, root_real):
             result["skipped"] += 1
             continue
         try:
             os.rmdir(path)
         except OSError:
-            pass
+            continue
+        touched_dirs.add(os.path.dirname(path))
 
 
 def _measure_category(category, now):
